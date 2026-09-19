@@ -16,6 +16,8 @@ Each stage now has one responsibility:
 analysis/                 dataset preparation and descriptive statistics
 training/                 model fitting, evaluation, and export
 visualization/            plot generation only
+notebooks/analysis/       commented exploratory analysis notebooks
+notebooks/training/       commented step-by-step training notebook
 src/machine_sentinel/     reusable feature, dataset, and model code
 firmware/                 embedded inference implementation
 tests/                    unit tests for shared Python code
@@ -24,9 +26,11 @@ models/                   generated model artifacts (not committed)
 artifacts/figures/        generated plots (not committed)
 ```
 
-The old exploratory notebooks were removed because they mixed all three stages,
-duplicated feature functions, and stored stale cell output. Git history still
-preserves them if an earlier experiment needs to be consulted.
+The exploratory notebooks are retained under `notebooks/` for interactive work
+and historical context. Their stale execution output has been cleared, and each
+one starts with guidance about its scope. The reusable Python modules remain the
+authoritative implementation so notebook experiments do not duplicate
+production logic.
 
 ## Setup
 
@@ -91,6 +95,10 @@ Run the unit tests with:
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests
 ```
+
+To explore the original experiments interactively, start Jupyter and open a
+notebook under `notebooks/analysis/` or `notebooks/training/`. Their relative
+data paths assume the notebook kernel starts in the notebook's own directory.
 
 ## Signal pipeline
 
