@@ -1,179 +1,146 @@
 # Machine Sentinel
 
-A lightweight edge vibration anomaly detector built with an **Arduino-compatible R4 board** and **MPU-6050**.
+Machine Sentinel is a lightweight edge vibration anomaly detector built with an
+Arduino-compatible R4 board and an MPU-6050. It samples 3-axis acceleration at
+200 Hz, extracts vibration features, and runs a small logistic-regression model
+on the microcontroller.
 
-The system samples 3-axis acceleration at **200 Hz**, extracts simple vibration features, runs a tiny **Logistic Regression** model directly on the microcontroller, and reports:
+The runtime reports `IDLE`, `NORMAL`, `ANOMALY`, persistent `ALERT`, and sensor
+`CLIP_RISK` states.
 
-- `IDLE`
-- `NORMAL`
-- `ANOMALY`
-- persistent `ALERT`
-- sensor saturation / `CLIP_RISK`
+## Repository layout
 
-## Architecture
+Each stage now has one responsibility:
+
+```text
+analysis/                 dataset preparation and descriptive statistics
+training/                 model fitting, evaluation, and export
+visualization/            plot generation only
+src/machine_sentinel/     reusable feature, dataset, and model code
+firmware/                 embedded inference implementation
+tests/                    unit tests for shared Python code
+data/                     local raw/processed recordings (not committed)
+models/                   generated model artifacts (not committed)
+artifacts/figures/        generated plots (not committed)
+```
+
+The old exploratory notebooks were removed because they mixed all three stages,
+duplicated feature functions, and stored stale cell output. Git history still
+preserves them if an earlier experiment needs to be consulted.
+
+## Setup
+
+Create an environment and install the project from the repository root:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+Raw recordings are expected under `data/raw/final/`:
+
+```text
+data/raw/final/
+├── normal_40/
+├── loud_40/
+├── freq_60/
+├── stationary/
+└── tapping/
+```
+
+## Workflow
+
+Run the stages independently from the repository root.
+
+1. Extract features from raw recordings:
+
+   ```bash
+   python -m analysis.extract_features
+   ```
+
+   This creates `data/processed/features.csv` and
+   `data/processed/challenge.csv`.
+
+2. Inspect numeric summaries without generating plots:
+
+   ```bash
+   python -m analysis.analyze_features
+   ```
+
+3. Generate visualizations:
+
+   ```bash
+   python -m visualization.plot_features
+   ```
+
+   PNG files are written to `artifacts/figures/`.
+
+4. Train and export the model:
+
+   ```bash
+   python -m training.train_model
+   ```
+
+   The command compares RMS-only, time-domain, frequency-domain, and combined
+   feature sets. It then exports the two-feature edge model to `models/` as a
+   pickle, deployment constants in JSON, and evaluation metrics in JSON.
+
+Run the unit tests with:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests
+```
+
+## Signal pipeline
 
 ```mermaid
 flowchart TD
-    A[MPU-6050 Accelerometer] --> B[200 Hz Sampling]
-    B --> C[1-second Window<br/>200 x XYZ Samples]
-    C --> D[Per-axis Mean Removal]
-    D --> E[RMS + P2P Features]
-
-    E --> F{RMS < Idle Threshold?}
-
+    A[MPU-6050 accelerometer] --> B[200 Hz sampling]
+    B --> C[1-second windows]
+    C --> D[Per-axis mean removal]
+    D --> E[RMS and peak-to-peak features]
+    E --> F{RMS below idle threshold?}
     F -- Yes --> G[IDLE]
     F -- No --> H[StandardScaler]
-    H --> I[Logistic Regression]
-    I --> J[P Anomaly]
-
-    J --> K{P >= 0.5?}
-    K -- No --> L[NORMAL]
-    K -- Yes --> M[ANOMALY]
-
-    M --> N[2-window Persistence]
-    N --> O[ALERT ON]
-
-    C --> P[Raw-axis Rail Check]
-    P --> Q[CLIP_RISK]
+    H --> I[Logistic regression]
+    I --> J{Anomaly probability at least 0.5?}
+    J -- No --> K[NORMAL]
+    J -- Yes --> L[ANOMALY]
+    L --> M[Two-window persistence]
+    M --> N[ALERT]
+    C --> O[Raw-axis rail check]
+    O --> P[CLIP_RISK]
 ```
 
-## Why this project
+The deployed model uses only RMS and peak-to-peak amplitude. Frequency-domain
+features remain in the offline analysis so their value can be measured before
+adding embedded complexity.
 
-The goal was to build a small but complete **edge-ML monitoring pipeline**, not just stream sensor values.
+## Current prototype results
 
-The project covers:
+Held-out controlled recordings produced 100% accuracy for RMS-only,
+time-domain, frequency-domain, and combined feature experiments. Live embedded
+testing demonstrated all runtime states, including clipping detection.
 
-- fixed-rate sensor acquisition
-- vibration signal processing
-- feature engineering
-- controlled dataset collection
-- train/test splitting by recording
-- model ablation
-- Python-to-C++ model deployment
-- live embedded inference
-- temporal alert persistence
-- clipping detection
-
-## Hardware
-
-- Arduino R4-compatible board
-- MPU-6050 accelerometer / gyroscope
-- I2C connection
-- speaker used as a controlled vibration source during experiments
-
-Accelerometer configuration:
+The learned edge-model constants currently embedded in the firmware are:
 
 ```text
-Range:       ±8 g
-Sensitivity: 4096 counts/g
-Sample rate: 200 Hz
-Window:      1 second
+Scaler mean:    [0.2503907709, 0.3384182347]
+Scaler scale:   [0.1136292923, 0.1760807222]
+Weights:        [2.3543119820, 2.1076915519]
+Intercept:       3.4872158012
+Idle threshold:  0.04637709 g
 ```
 
-## Edge Features
+## Limitations
 
-The deployed model uses only:
+This is a controlled prototype, not a production predictive-maintenance
+system. The speaker used during testing has a frequency-dependent mechanical
+response, so the 40 Hz and 60 Hz conditions could not be cleanly
+amplitude-matched. The current edge model therefore detects vibration intensity
+and transient changes more reliably than subtle frequency-only faults.
 
-```text
-RMS
-P2P
-```
-
-RMS measures overall dynamic vibration strength.
-
-P2P measures the excursion between the minimum and maximum 3D dynamic acceleration magnitude within a window.
-
-Frequency-domain features were also explored offline using FFT, including 40 Hz, 60 Hz and aliasing experiments. Ablation showed that the current controlled dataset was already perfectly separable using time-domain features, so FFT was not required for the final embedded classifier.
-
-## Model
-
-A `StandardScaler + LogisticRegression` pipeline was trained in Python.
-
-Deployment does **not** require scikit-learn on the Arduino. The learned scaler values, model weights and intercept are exported as constants.
-
-Runtime inference is:
-
-```text
-scaled_rms = (rms - mean_rms) / scale_rms
-scaled_ptp = (ptp - mean_ptp) / scale_ptp
-
-score =
-    weight_rms * scaled_rms +
-    weight_ptp * scaled_ptp +
-    intercept
-
-P(anomaly) = sigmoid(score)
-```
-
-## Robustness Logic
-
-A low-RMS activity gate separates machine-off behavior from active operation:
-
-```text
-RMS < 0.0464 g -> IDLE
-```
-
-An alert is raised only after **2 consecutive anomalous windows**.
-
-The alert is cleared after **2 consecutive non-anomalous windows**.
-
-Raw accelerometer values are also monitored near the sensor rails to flag windows where the MPU may be saturating.
-
-## Results
-
-Held-out controlled recordings:
-
-```text
-RMS only          100%
-RMS + P2P         100%
-Frequency only    100%
-All features      100%
-```
-
-Live embedded testing successfully demonstrated:
-
-```text
-IDLE     ✓
-NORMAL   ✓
-ANOMALY  ✓
-ALERT    ✓
-CLIP_RISK detection ✓
-```
-
-Example live output:
-
-```text
-RMS: 0.114532 g | P2P: 0.165146 g |
-P(anomaly): 0.1975 | RAW: NORMAL |
-CLIP_RISK: NO | ALERT: OFF
-```
-
-## Important Limitation
-
-This is a **controlled prototype**, not a production predictive-maintenance system.
-
-The speaker used for testing has a strong frequency-dependent mechanical response, so 40 Hz and 60 Hz conditions could not be cleanly amplitude-matched. Because of this, the final edge model primarily detects changes in vibration intensity / transient behavior rather than subtle frequency-only faults.
-
-A stronger follow-up would use:
-
-- a calibrated vibration source
-- real machine data
-- amplitude-matched frequency experiments
-- frequency-domain features when they provide measurable added value
-
-
-## Takeaway
-
-Machine Sentinel demonstrates an end-to-end path from:
-
-```text
-sensor
-→ signal processing
-→ feature engineering
-→ ML training
-→ model interpretation
-→ embedded inference
-→ robust runtime behavior
-```
-
-The focus is not on claiming industrial fault diagnosis, but on building and validating a small, explainable edge-ML system from first principles.
+A stronger follow-up would use a calibrated vibration source, real machine
+recordings, amplitude-matched frequency experiments, and frequency-domain
+features only when they show measurable added value.

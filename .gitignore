@@ -1,4 +1,12 @@
-.venv
-data
-.vscode
-.gitignore
+.venv/
+.vscode/
+.ipynb_checkpoints/
+__pycache__/
+*.py[cod]
+
+# Local recordings and generated outputs
+data/
+models/
+artifacts/
+
+.DS_Store
